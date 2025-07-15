@@ -1,18 +1,51 @@
-# pip install streamlit dateparser
-
 import streamlit as st
 from datetime import datetime, timedelta
 import re
 import dateparser
+import requests
+import json
 
-# -------------------------------
-# Time expression parser function
-# -------------------------------
+# --------------------------
+# CONFIG (Secrets + Headers)
+# --------------------------
+BEARER_TOKEN = st.secrets["BEARER_TOKEN"]
+BASE_URL = st.secrets["BASE_URL"]
+FOLDER_ID = st.secrets["FOLDER_ID"]  # integer
+QUEUE_NAME = st.secrets["QUEUE_NAME"]
+
+HEADERS = {
+    "Authorization": f"Bearer {BEARER_TOKEN}",
+    "Content-Type": "application/json"
+}
+
+# --------------------------
+# Reusable API Utilities
+# --------------------------
+def api_get(endpoint, params=None, folder_id=None):
+    url = f"{BASE_URL}/{endpoint}"
+    headers = HEADERS.copy()
+    if folder_id:
+        headers["X-UiPath-OrganizationUnitId"] = str(folder_id)
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    return response.json()
+
+def api_post(endpoint, payload, folder_id=None):
+    url = f"{BASE_URL}/{endpoint}"
+    headers = HEADERS.copy()
+    if folder_id:
+        headers["X-UiPath-OrganizationUnitId"] = str(folder_id)
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
+    response.raise_for_status()
+    return response.json()
+
+# --------------------------
+# NLP Time Expression Parser
+# --------------------------
 def get_date_range_from_expression(expression: str):
     now = datetime.now()
     expression = expression.lower().strip()
 
-    # Quarter-based expressions
     quarter_match = re.match(r"(1st|first|2nd|second|3rd|third|4th|fourth|q1|q2|q3|q4)\s*(quarter)?\s*(of|in)?\s*(\d{4})", expression)
     if quarter_match:
         quarter_map = {
@@ -21,21 +54,19 @@ def get_date_range_from_expression(expression: str):
             "3rd": (7, 9), "third": (7, 9), "q3": (7, 9),
             "4th": (10, 12), "fourth": (10, 12), "q4": (10, 12)
         }
-        quarter_key = quarter_match.group(1)
+        q_key = quarter_match.group(1)
         year = int(quarter_match.group(4))
-        start_month, end_month = quarter_map[quarter_key]
+        start_month, end_month = quarter_map[q_key]
         start_date = datetime(year, start_month, 1)
         end_date = datetime(year, end_month + 1, 1) - timedelta(days=1) if end_month < 12 else datetime(year + 1, 1, 1) - timedelta(days=1)
         return start_date.date(), end_date.date()
 
-    # Week/month expressions
     if expression == "yesterday":
         d = now - timedelta(days=1)
         return d.date(), d.date()
 
     if expression == "today":
-        d = now
-        return d.date(), d.date()
+        return now.date(), now.date()
 
     if "last week" in expression:
         start = now - timedelta(days=now.weekday() + 7)
@@ -51,8 +82,7 @@ def get_date_range_from_expression(expression: str):
         first_this_month = now.replace(day=1)
         last_month_end = first_this_month - timedelta(days=1)
         start = last_month_end.replace(day=1)
-        end = last_month_end
-        return start.date(), end.date()
+        return start.date(), last_month_end.date()
 
     if "this month" in expression:
         start = now.replace(day=1)
@@ -60,47 +90,58 @@ def get_date_range_from_expression(expression: str):
         end = next_month - timedelta(days=1)
         return start.date(), end.date()
 
-    # Fallback to parsing single date
-    start = dateparser.parse(expression)
-    if start:
-        return start.date(), start.date()
+    parsed = dateparser.parse(expression)
+    if parsed:
+        return parsed.date(), parsed.date()
 
-    # If nothing matches
-    raise ValueError("❌ Couldn't parse the expression. Try 'Q2 2024', 'last month', 'today', etc.")
+    raise ValueError("❌ Could not parse date expression.")
 
-# -------------------------------
-# Streamlit Chatbot UI
-# -------------------------------
-st.set_page_config(page_title="🧠 Date Expression Chatbot", layout="centered")
-st.title("🧠 Natural Language Date Chatbot")
+# --------------------------
+# Push to UiPath Queue
+# --------------------------
+def push_to_queue(start_date, end_date):
+    payload = {
+        "itemData": {
+            "Name": QUEUE_NAME,
+            "SpecificContent": {
+                "StartDate": str(start_date),
+                "EndDate": str(end_date)
+            },
+            "Priority": "Normal"
+        }
+    }
+    result = api_post("odata/Queues/UiPathODataSvc.AddQueueItem", payload, folder_id=FOLDER_ID)
+    return result
 
-# Session state to track messages
+# --------------------------
+# Chatbot UI
+# --------------------------
+st.set_page_config(page_title="📤 UiPath Queue Chatbot", layout="centered")
+st.title("🤖 Natural Date Chatbot + UiPath Queue")
+
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! 🤖 Enter a time expression like **'last week'**, **'Q1 2024'**, or **'10 July 2025'** and I'll tell you the date range."}
+        {"role": "assistant", "content": "Hi there! 👋 Enter a time phrase like `last month`, `Q1 2025`, or `yesterday`. I’ll parse it and push to UiPath Queue."}
     ]
 
-# Display messages
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input from user
-user_input = st.chat_input("Enter time frame expression...")
+user_input = st.chat_input("Enter your date expression...")
 
 if user_input:
-    # Show user message
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
     try:
-        start_date, end_date = get_date_range_from_expression(user_input)
-        response = f"✅ Start Date: **{start_date}**\n\n✅ End Date: **{end_date}**"
-    except ValueError as e:
-        response = str(e)
+        start, end = get_date_range_from_expression(user_input)
+        push_to_queue(start, end)
+        reply = f"✅ Dates sent to UiPath Queue!\n\n📅 **Start Date**: `{start}`\n📅 **End Date**: `{end}`"
+    except Exception as e:
+        reply = f"❌ Error: {e}"
 
-    # Show assistant response
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append({"role": "assistant", "content": reply})
     with st.chat_message("assistant"):
-        st.markdown(response)
+        st.markdown(reply)
