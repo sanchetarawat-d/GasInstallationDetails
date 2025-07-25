@@ -117,7 +117,7 @@ def push_to_queue(start_date, end_date):
 # Chatbot UI
 # --------------------------
 st.set_page_config(page_title="📤 UiPath Queue Chatbot", layout="centered")
-st.title("🤖 Natural Date Chatbot + UiPath Queue")
+st.title("🤖Chatbot")
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
