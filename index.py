@@ -121,7 +121,7 @@ st.title("🤖 Natural Date Chatbot + UiPath Queue")
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi there! 👋 Enter a time phrase like `last month`, `Q1 2025`, or `yesterday`. I’ll parse it and push to UiPath Queue."}
+        {"role": "assistant", "content": "Hi there! 👋 Enter your querry for Gas Installations"}
     ]
 
 for msg in st.session_state.messages:
